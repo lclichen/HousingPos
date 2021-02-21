@@ -10,35 +10,21 @@ using Dalamud.Plugin;
 
 namespace HousingPos.Objects
 {
-    
-    public class CloudMap
+    public static class HttpPost
     {
-        public static CloudMap Empty => new CloudMap("", "", "", "", "");
-
-        public string Location;
-        public string Name;
-        public string Hash;
-        public string ObjectId;
-        public string Tags;
-        public CloudMap(string location,  string uploadName, string hash, string tags, string objectId)
+        // private static string appId = "OHAlmaVE5wP7gXT4dDpcpqsv-MdYXbMMI";
+        // private static string appkey = "XkMdaB5RAXIeCOGX1NUL7FIj";
+        public static async Task<TResult> WithTimeout<TResult>(this Task<TResult> task, TimeSpan timeout)
         {
-            Location = location;
-            Name = uploadName;
-            Hash = hash;
-            Tags = tags;
-            ObjectId = objectId;
+            if (task == await Task.WhenAny(task, Task.Delay(timeout)))
+                return await task;
+            throw new TimeoutException();
         }
-    }
-    
-    public class HttpPost
-    {
-        private static string appId = "OHAlmaVE5wP7gXT4dDpcpqsv-MdYXbMMI";
-        private static string appkey = "XkMdaB5RAXIeCOGX1NUL7FIj";
-        public static string GetMD5(string SourceData)
+        public static string GetMD5(string SourceData, string salt)
         {
             byte[] tmpData;
             byte[] tmpHash;
-            tmpData = ASCIIEncoding.ASCII.GetBytes(SourceData);
+            tmpData = ASCIIEncoding.ASCII.GetBytes(SourceData + salt);
             tmpHash = new MD5CryptoServiceProvider().ComputeHash(tmpData);
             StringBuilder sOutput = new StringBuilder(tmpHash.Length);
             for (int i = 0; i < tmpHash.Length; i++)
@@ -47,18 +33,15 @@ namespace HousingPos.Objects
             }
             return sOutput.ToString();
         }
-        public static async Task<string> Post(string Uri,string Location, string UploadName, string str, string tags, string Uploader,string UserId)
+        public static async Task<string> Post(string Uri, int LocationId, string UploadName, string str, string tags, string Uploader, string UserId, string Md5Salt)
         {
-            
-            HttpClient httpClient = new HttpClient();
-            if (str==null)
-            {
+            if (str == null || str == "" || str == "[]")
                 return "You Can't Upload An Empty List.";
-            }
-            var UserHash = GetMD5(UserId);
+            HttpClient httpClient = new HttpClient();
+            var UserHash = GetMD5(UserId, Md5Salt);
             var values = new Dictionary<string, string>
             {
-                {"Location", Location},
+                {"LocationId", LocationId.ToString()},
                 {"UploadName", UploadName },
                 {"Items", str },
                 {"Tags", tags },
@@ -68,9 +51,10 @@ namespace HousingPos.Objects
             HttpContent data = new FormUrlEncodedContent(values);
             HttpResponseMessage response = await httpClient.PostAsync(Uri + "/index.php", data);
             response.EnsureSuccessStatusCode();
-            string resultStr = await response.Content.ReadAsStringAsync();
+            string resultStr = await response.Content.ReadAsStringAsync().WithTimeout(TimeSpan.FromSeconds(10));
             return resultStr;
         }
+        /*
         public static async Task<string> Login(string Uri, string UserName)
         {
             HttpClient httpClient = new HttpClient();
@@ -134,14 +118,16 @@ namespace HousingPos.Objects
             string resultStr = await response.Content.ReadAsStringAsync();
             return resultStr;
         }
+        */
         public static async Task<string> GetMap(string Uri)
         {
             HttpClient httpClient = new HttpClient();
             HttpResponseMessage response = await httpClient.GetAsync(Uri + "/map.json");
             response.EnsureSuccessStatusCode();
-            string resultStr = await response.Content.ReadAsStringAsync();
+            string resultStr = await response.Content.ReadAsStringAsync().WithTimeout(TimeSpan.FromSeconds(10));
             return resultStr;
         }
+        /*
         public static async Task<string> GetMapWithLeanCloud(string Uri)
         {
             HttpClient httpClient = new HttpClient();
@@ -152,14 +138,16 @@ namespace HousingPos.Objects
             string resultStr = await response.Content.ReadAsStringAsync();
             return resultStr;
         }
+        */
         public static async Task<string> GetItems(string Uri, string hash)
         {
             HttpClient httpClient = new HttpClient();
             HttpResponseMessage response = await httpClient.GetAsync(Uri + "/result/" + hash + ".json");
             response.EnsureSuccessStatusCode();
-            string resultStr = await response.Content.ReadAsStringAsync();
+            string resultStr = await response.Content.ReadAsStringAsync().WithTimeout(TimeSpan.FromSeconds(10));
             return resultStr;
         }
+        /*
         public static async Task<string> GetItemsWithLeanCloud(string Uri, string hash)
         {
             HttpClient httpClient = new HttpClient();
@@ -181,5 +169,6 @@ namespace HousingPos.Objects
             string resultStr = await response.Content.ReadAsStringAsync();
             return resultStr;
         }
+        */
     }
 }
