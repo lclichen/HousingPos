@@ -22,6 +22,7 @@ using Dalamud.Hooking;
 using HousingPos.Gui;
 using System.Threading;
 using System.Windows.Forms;
+using ImGuiScene;
 
 namespace HousingPos
 {
@@ -37,7 +38,10 @@ namespace HousingPos
         public SigScanner Scanner { get; private set; }
 
         private Localizer _localizer;
-        private Thread thread;
+
+        // Texture dictionary for the housing item icons.
+        public readonly Dictionary<ushort, TextureWrap> TextureDictionary = new Dictionary<ushort, TextureWrap>();
+
         private bool threadRunning = false;
 
         public List<HousingItem> HousingItemList = new List<HousingItem>();
@@ -54,6 +58,9 @@ namespace HousingPos
         private Hook<UIFuncDelegate> UIFuncHook;
         public void Dispose()
         {
+            foreach (var t in this.TextureDictionary)
+                t.Value?.Dispose();
+            TextureDictionary.Clear();
             LoadHousingFuncHook.Disable();
             UIFuncHook.Disable();
             Config.PlaceAnywhere = false;
@@ -64,31 +71,15 @@ namespace HousingPos
             Interface?.Dispose();
         }
 
-        private void ForceCulture(string name)
-        {
-            try
-            {
-                CultureInfo.DefaultThreadCurrentCulture = CultureInfo.CreateSpecificCulture(name);
-                CultureInfo.DefaultThreadCurrentUICulture = CultureInfo.CreateSpecificCulture(name);
-            }
-            catch (CultureNotFoundException)
-            {
-                return;
-            }
-            catch (ArgumentException)
-            {
-                return;
-            }
-        }
 
         public void Initialize(DalamudPluginInterface pluginInterface)
         {
-            ForceCulture("en-US");
             Interface = pluginInterface;
             CommandManager = pluginInterface.CommandManager;
             Scanner = Interface.TargetModuleScanner;
             Config = pluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
             Config.Initialize(pluginInterface);
+            RefreshFurnitureList(ref Config.HousingItemList);
             Config.Grouping = false;
             Config.Save();
             _localizer = new Localizer(Config.UILanguage);
@@ -120,27 +111,39 @@ namespace HousingPos
             UIFuncHook.Enable();
             LoadHousingFuncHook.Enable();
         }
-        public void Loop()
+
+        public void RefreshFurnitureList(ref List<HousingItem> FurnitureList)
         {
-            try
+            for(var i = 0; i < FurnitureList.Count; i++)
             {
-                while (this.threadRunning)
+                if(FurnitureList[i].ModelKey > 0 && FurnitureList[i].FurnitureKey == 0)
                 {
-                    if (Config.Previewing)
-                    {
-                        Dalamud.Game.Internal.Gui.Addon.Addon housingMenu = Interface.Framework.Gui.GetAddonByName("HousingMenu", 1);
-                        if(housingMenu != null)
-                        {
-                            Log("Addon occured!");
-                        }
-                    }
+                    FurnitureList[i].FurnitureKey = (uint)(FurnitureList[i].ModelKey + 0x30000);
+                    var furniture = Interface.Data.GetExcelSheet<HousingFurniture>().GetRow(FurnitureList[i].FurnitureKey);
+                    if (furniture == null) continue;
+                    FurnitureList[i].ModelKey = furniture.ModelKey;
                 }
             }
-            catch (Exception)
-            {
-                Log("Don't crash the game");
-            }
         }
+
+        public void TranslateFurnitureList(ref List<HousingItem> FurnitureList)
+        {
+            for (var i = 0; i < FurnitureList.Count; i++)
+            {
+                if (FurnitureList[i].FurnitureKey == 0)
+                {
+                    RefreshFurnitureList(ref FurnitureList);
+                    break;
+                }
+            }
+            for (var i = 0; i < FurnitureList.Count; i++)
+            {
+                var furniture = Interface.Data.GetExcelSheet<HousingFurniture>().GetRow(FurnitureList[i].FurnitureKey);
+                FurnitureList[i].Name = furniture == null ? "" : furniture.Item.Value.Name;
+            }
+            FurnitureList = FurnitureList.Where(e => e.Name != "").ToList();
+        }
+
         private void UIFuncDetour(Int64 a1, UInt32 a2, char a3)
         {
             //Log($"TestFuncHook: {a1}, {a2}, {(int)a3}");
@@ -156,6 +159,8 @@ namespace HousingPos
                 if(HousingItemList.Count > 0 && Config.HousingItemList.Count == 0)
                 {
                     Log(String.Format(_localizer.Localize("Load {0} furnitures."), HousingItemList.Count));
+                    RefreshFurnitureList(ref HousingItemList);
+                    RefreshFurnitureList(ref Config.HousingItemList);
                     Config.HousingItemList = HousingItemList.ToList();
                     Config.HiddenScreenItemHistory = new List<int>();
                     var territoryTypeId = Interface.ClientState.TerritoryType;
@@ -186,7 +191,7 @@ namespace HousingPos
             }
             if (Config.Previewing)
             {
-                // Log($"Config.Previewing");
+                RefreshFurnitureList(ref Config.HousingItemList);
                 if (DateTime.Now > Config.lastPosPackageTime.AddSeconds(5))
                 {
                     PreviewPages.Clear();
@@ -210,7 +215,7 @@ namespace HousingPos
                     {
                         count++;
                         var item = Config.HousingItemList[hashIndex];
-                        var furniture = Interface.Data.GetExcelSheet<HousingFurniture>().GetRow((uint)(item.ModelKey + 0x30000));
+                        var furniture = Interface.Data.GetExcelSheet<HousingFurniture>().GetRow(item.FurnitureKey);
                         byte[] itemBytes = new byte[24];
                         itemBytes[2] = 1;
                         if (furniture.CustomTalk.Row > 0)
@@ -231,7 +236,7 @@ namespace HousingPos
                                 continue;
                             }
                         }
-                        BitConverter.GetBytes(item.ModelKey).CopyTo(itemBytes, 0);
+                        BitConverter.GetBytes((ushort)(item.FurnitureKey - 0x30000)).CopyTo(itemBytes, 0);
                         itemBytes[4] = item.Stain;
                         BitConverter.GetBytes(item.Rotate).CopyTo(itemBytes, 8);
                         BitConverter.GetBytes(item.X).CopyTo(itemBytes, 12);
@@ -263,8 +268,9 @@ namespace HousingPos
             int cnt = 0;
             for (int i = 12; i < posArr.Length && i + 24 < posArr.Length; i += 24)
             {
-                var modelKey = BitConverter.ToUInt16(posArr, i);
-                var item = Interface.Data.GetExcelSheet<HousingFurniture>().GetRow((uint)(modelKey + 0x30000)).Item.Value;
+                uint furnitureKey = (uint)(BitConverter.ToUInt16(posArr, i) + 0x30000);
+                var furniture = Interface.Data.GetExcelSheet<HousingFurniture>().GetRow(furnitureKey);
+                var item = furniture.Item.Value;
                 if (item.RowId == 0) continue;
                 byte[] tmpArr = new byte[6];
                 Array.Copy(posArr, i + 2, tmpArr, 0, 6);
@@ -277,7 +283,8 @@ namespace HousingPos
                 var z = BitConverter.ToSingle(posArr, i + 20);
                 cnt++;
                 HousingItemList.Add(new HousingItem(
-                        modelKey,
+                        furnitureKey,
+                        furniture.ModelKey,
                         item.RowId,
                         stain,
                         x,
@@ -402,6 +409,6 @@ namespace HousingPos
             }
         }
         */
-                    }
+    }
 
-                }
+}

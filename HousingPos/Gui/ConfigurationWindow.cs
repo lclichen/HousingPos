@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using Dalamud.Plugin;
-using Dalamud.Game.Chat;
+using Dalamud.Game.Text;
 using ImGuiNET;
 using HousingPos.Objects;
 using System.ComponentModel.DataAnnotations;
@@ -14,6 +14,8 @@ using System.Reflection;
 using Lumina.Excel.GeneratedSheets;
 using Dalamud.Interface;
 using System.Diagnostics;
+using System.Globalization;
+using Dalamud.Data.LuminaExtensions;
 
 namespace HousingPos.Gui
 {
@@ -25,7 +27,7 @@ namespace HousingPos.Gui
         private int _selectedLanguage;
         private Localizer _localizer;
         private string CustomTag = string.Empty;
-        private Dictionary<uint, uint> iconToFurniture = new Dictionary<uint, uint> { };
+        private readonly Dictionary<uint, uint> iconToFurniture = new() { };
 
         public ConfigurationWindow(HousingPos plugin) : base(plugin)
         {
@@ -52,6 +54,51 @@ namespace HousingPos.Gui
                 ImGui.EndChild();
             }
         }
+
+        #region Helper Functions
+        public void DrawIcon(ushort icon, Vector2 size)
+        {
+            if (icon < 65000)
+            {
+                if (Plugin.TextureDictionary.ContainsKey(icon))
+                {
+                    var tex = Plugin.TextureDictionary[icon];
+                    if (tex == null || tex.ImGuiHandle == IntPtr.Zero)
+                    {
+                        ImGui.PushStyleColor(ImGuiCol.Border, new Vector4(1, 0, 0, 1));
+                        ImGui.BeginChild("FailedTexture", size);
+                        ImGui.Text(icon.ToString());
+                        ImGui.EndChild();
+                        ImGui.PopStyleColor();
+                    }
+                    else
+                        ImGui.Image(Plugin.TextureDictionary[icon].ImGuiHandle, size);
+                }
+                else
+                {
+                    ImGui.BeginChild("WaitingTexture", size, true);
+                    ImGui.EndChild();
+
+                    Plugin.TextureDictionary[icon] = null;
+
+                    Task.Run(() =>
+                    {
+                        try
+                        {
+                            var iconTex = Plugin.Interface.Data.GetIcon(icon);
+                            var tex = Plugin.Interface.UiBuilder.LoadImageRaw(iconTex.GetRgbaImageData(), iconTex.Header.Width, iconTex.Header.Height, 4);
+                            if (tex != null && tex.ImGuiHandle != IntPtr.Zero)
+                                Plugin.TextureDictionary[icon] = tex;
+                        }
+                        catch
+                        {
+                        }
+                    });
+                }
+            }
+        }
+        #endregion
+
 
         #region Basic UI
         private void DrawGeneralSettings()
@@ -312,17 +359,7 @@ namespace HousingPos.Gui
                 try
                 {
                     Config.HousingItemList = JsonConvert.DeserializeObject<List<HousingItem>>(str);
-                    foreach (var item in Config.HousingItemList)
-                    {
-                        try
-                        {
-                            item.Name = Plugin.Interface.Data.GetExcelSheet<Item>().GetRow(item.ItemKey).Name;
-                        }
-                        catch (Exception e)
-                        {
-                            Plugin.LogError($"Error while translating item#{item.ItemKey}: {e.Message}");
-                        }
-                    }
+                    Plugin.TranslateFurnitureList(ref Config.HousingItemList);
                     Config.ResetRecord();
                     Plugin.Log(String.Format(_localizer.Localize("Imported {0} items from your clipboard."), Config.HousingItemList.Count));
                 }
@@ -369,7 +406,12 @@ namespace HousingPos.Gui
             Config.PlaceY = housingItem.Y;
             Config.PlaceZ = housingItem.Z;
             Config.PlaceRotate = housingItem.Rotate;
-            Plugin.CommandManager.ProcessCommand($"/bdth {housingItem.X} {housingItem.Y} {housingItem.Z} {housingItem.Rotate}");
+            string bdthCommand = "/bdth";
+            bdthCommand += $" {housingItem.X.ToString(CultureInfo.InvariantCulture)}";
+            bdthCommand += $" {housingItem.Y.ToString(CultureInfo.InvariantCulture)}";
+            bdthCommand += $" {housingItem.Z.ToString(CultureInfo.InvariantCulture)}";
+            bdthCommand += $" {housingItem.Rotate.ToString(CultureInfo.InvariantCulture)}";
+            Plugin.CommandManager.ProcessCommand(bdthCommand);
             if (housingItem.children.Count > 0)
                 housingItem.ReCalcChildrenPos();
             Config.Save();
@@ -476,6 +518,12 @@ namespace HousingPos.Gui
                     displayName = '\ue06f' + displayName;
                 if (housingItem.children.Count == 0)
                 {
+                    var item = Plugin.Interface.Data.GetExcelSheet<Item>().GetRow(housingItem.ItemKey);
+                    if (item != null)
+                    {
+                        DrawIcon(item.Icon, new Vector2(20, 20));
+                        ImGui.SameLine();
+                    }
                     if (Config.Grouping && Config.GroupingList.IndexOf(i) != -1)
                     {
                         if (Config.GroupingList.IndexOf(i) == 0)
@@ -492,6 +540,12 @@ namespace HousingPos.Gui
                 }
                 else
                 {
+                    var item = Plugin.Interface.Data.GetExcelSheet<Item>().GetRow(housingItem.ItemKey);
+                    if (item != null)
+                    {
+                        DrawIcon(item.Icon, new Vector2(20, 20));
+                        ImGui.SameLine();
+                    }
                     bool open1 = ImGui.TreeNode(displayName);
                     ImGui.NextColumn();
                     DrawRow(i, housingItem);
@@ -501,6 +555,12 @@ namespace HousingPos.Gui
                         {
                             var childItem = housingItem.children[j];
                             displayName = childItem.Name;
+                            item = Plugin.Interface.Data.GetExcelSheet<Item>().GetRow(childItem.ItemKey);
+                            if (item != null)
+                            {
+                                DrawIcon(item.Icon, new Vector2(20, 20));
+                                ImGui.SameLine();
+                            }
                             ImGui.Text(displayName);
                             ImGui.NextColumn();
                             DrawRow(i, childItem, j);
@@ -592,11 +652,12 @@ namespace HousingPos.Gui
         #endregion
 
 
-        #region Chocobo Save
+        #region Chocobo Shit
         private bool LoadChocoboSave(string str)
         {
             try
             {
+                Config.HousingItemList.Clear();
                 var chocoboInput = JsonConvert.DeserializeObject<ChocoboInput>(str);
                 int failed = 0;
                 int successed = 0;
@@ -614,14 +675,15 @@ namespace HousingPos.Gui
                 bool oldSave = false;
                 foreach (var chocoboItem in chocoboInput.list)
                 {
-                    var iconIdOrFurnitureKey = chocoboItem.categoryId;
-                    var furniture = Plugin.Interface.Data.GetExcelSheet<HousingFurniture>().GetRow(iconIdOrFurnitureKey + 196608);
+                    var iconIdOrCategoryId = chocoboItem.categoryId;
+                    var furniture = Plugin.Interface.Data.GetExcelSheet<HousingFurniture>().GetRow(iconIdOrCategoryId + 0x30000);
                     if (furniture == null)
                     {
                         oldSave = true;
-                        var furnitureId = iconToFurniture.ContainsKey(iconIdOrFurnitureKey) ? (int)iconToFurniture[iconIdOrFurnitureKey] : -1;
+                        var furnitureId = iconToFurniture.ContainsKey(iconIdOrCategoryId) ? (int)iconToFurniture[iconIdOrCategoryId] : -1;
                         if(furnitureId == -1)
                         {
+                            Plugin.Log($"Cannot find iconIdOrCategoryId:{iconIdOrCategoryId}");
                             failed += chocoboItem.count;
                             continue;
                         }
@@ -638,7 +700,7 @@ namespace HousingPos.Gui
                         if (float.IsNaN(rotation))
                             rotation = 0;
                         Config.HousingItemList.Add(new HousingItem(
-                            furniture.ModelKey, item.RowId, 0, x, y, z, rotation, item.Name));
+                            furniture.RowId, furniture.ModelKey, item.RowId, 0, x, y, z, rotation, item.Name));
                         successed++;
                     }
                     Config.ResetRecord();
@@ -663,7 +725,7 @@ namespace HousingPos.Gui
             string uniqueId = i.ToString();
             ImGui.Text($"{cloudMap.Name}"); ImGui.NextColumn();
             var territoryName = Plugin.Interface.Data.GetExcelSheet<TerritoryType>().GetRow((uint)cloudMap.LocationId)?.PlaceName?.Value.Name;
-            ImGui.Text(territoryName != null? territoryName : _localizer.Localize("Unknown")); ImGui.NextColumn();
+            ImGui.Text(territoryName ?? _localizer.Localize("Unknown")); ImGui.NextColumn();
             ImGui.Text($"{cloudMap.Tags}"); ImGui.NextColumn();
             if (ImGui.Button(_localizer.Localize("Import") + "##" + uniqueId))
             {
@@ -678,18 +740,7 @@ namespace HousingPos.Gui
                         try
                         {
                             Config.HousingItemList = JsonConvert.DeserializeObject<List<HousingItem>>(str);
-                            foreach (var item in Config.HousingItemList)
-                            {
-                                try
-                                {
-                                    item.Name = Plugin.Interface.Data.GetExcelSheet<Item>().GetRow(item.ItemKey).Name;
-                                }
-                                catch (Exception e)
-                                {
-                                    Plugin.LogError($"Error while translating item#{item.ItemKey}: {e.Message}", e.ToString());
-                                }
-                            }
-                            Config.HousingItemList = Config.HousingItemList.Where(e => e.Name != "").ToList();
+                            Plugin.TranslateFurnitureList(ref Config.HousingItemList);
                             Config.ResetRecord();
                             Plugin.Log(String.Format(_localizer.Localize("Imported {0} items from Cloud."), Config.HousingItemList.Count));
                         }
@@ -904,9 +955,12 @@ namespace HousingPos.Gui
                                 string res = posttask.Result;
                                 Plugin.Log(res);
                             }
-                            catch (Exception e)
+                            catch (AggregateException e)
                             {
-                                Plugin.LogError($"Error while Postdata: {e.Message}", e.ToString());
+                                foreach (var errInner in e.InnerExceptions)
+                                {
+                                    Plugin.LogError($"Error while Postdata: {errInner.Message}", e.ToString()); //this will call ToString() on the inner execption and get you message, stacktrace and you could perhaps drill down further into the inner exception of it if necessary 
+                                }
                                 CanUpload = true;
                             }
                         });
