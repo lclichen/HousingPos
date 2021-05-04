@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using Dalamud.Plugin;
-using Dalamud.Game.Text;
 using ImGuiNET;
 using HousingPos.Objects;
 using System.ComponentModel.DataAnnotations;
